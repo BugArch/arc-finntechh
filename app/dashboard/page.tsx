@@ -1,742 +1,279 @@
-/**
- * Copyright 2026 Circle Internet Group, Inc.  All rights reserved.
- *
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- *
- * SPDX-License-Identifier: Apache-2.0
- */
+'use client'
 
-"use client"
+import { useEffect, useState } from 'react'
+import { useRouter } from 'next/navigation'
+import { useMarketSnapshot } from '@/hooks/useMarketSnapshot'
+import { usePortfolioSnapshot } from '@/hooks/usePortfolioSnapshot'
+import { useDecisionLog } from '@/hooks/useDecisionLog'
 
-import { useEffect, useState, useMemo } from "react"
-import Link from "next/link"
-import {
-  IconArrowsLeftRight,
-  IconArrowUpRight,
-  IconPlus,
-  IconWallet,
-  IconLoader,
-} from "@tabler/icons-react"
-import { RealtimeChannel } from "@supabase/supabase-js"
-
-import { AddFundsDialog } from "@/components/add-funds-dialog"
-import { NewWalletDialog } from "@/components/new-wallet-dialog"
-import { RebalanceButton } from "@/components/rebalance-button"
-import { SectionCards } from "@/components/section-cards"
-import { SendButton } from "@/components/send-button"
-import { TransferDialog } from "@/components/transfer-dialog"
-import { Button } from "@/components/ui/button"
-import { Separator } from "@/components/ui/separator"
-import { Skeleton } from "@/components/ui/skeleton"
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs"
-import { createClient } from "@/lib/supabase/client"
-import { BLOCK_EXPLORERS } from "@/lib/constants/block-explorers"
-import { ChartLineInteractive } from "@/components/chart-area-interactive"
-import { type ChartConfig } from "@/components/ui/chart"
-import { GatewayBalanceDialog } from "@/components/gateway-balance-dialog"
-import { DataFreshnessIndicator } from "@/components/data-freshness-indicator"
-import { GlobalSearch } from "@/components/global-search"
-import { useDateRange } from "@/hooks/use-date-range"
-import { ExportButton } from "@/components/export-button"
-import { useBalanceContext } from "@/lib/contexts/balance-context"
-import { toast } from "sonner"
-
-const GATEWAY_ADDRESS = "0x0077777d7EBA4688BDeF3E311b846F25870A19B9"
-
-type Wallet = {
-  id: string
-  name: string
-  address: string
-  blockchain: string
-  type: "treasury" | "payout" | "customer"
-  circle_wallet_id: string
-  created_at: string
-}
-
-type Transaction = {
-  id: string
-  amount: number
-  sender_address: string
-  recipient_address: string
-  created_at: string
-  status: "PENDING" | "CONFIRMED" | "COMPLETE" | "FAILED"
-  type: "INBOUND" | "OUTBOUND"
-  blockchain: "ETH-SEPOLIA" | "BASE-SEPOLIA" | "AVAX-FUJI" | "ARC-TESTNET"
-}
-
-type ActivityItem = {
-  id: string
-  type: "wallet_created" | "transfer" | "deposit" | "send"
-  title: React.ReactNode
-  description: React.ReactNode
-  timestamp: string
-  icon: React.ElementType
-}
-
-function shortenAddress(address: string) {
-  if (!address) return ""
-  if (address.length < 10) return address
-  return `${address.slice(0, 6)}...${address.slice(-5)}`
-}
-
-function getExplorerUrl(blockchain: string, address: string) {
-  const baseUrl = BLOCK_EXPLORERS[blockchain]
-  if (!baseUrl) return "#"
-  return `${baseUrl}/address/${address}`
-}
-
-function formatDate(dateString: string) {
-  if (typeof window === 'undefined') return dateString
-  try {
-    return new Date(dateString).toLocaleDateString("en-US", {
-      month: "short",
-      day: "numeric",
-      hour: "numeric",
-      minute: "numeric",
-    })
-  } catch {
-    return dateString
+function RegimeBadge({ regime, score }: { regime: string, score: number }) {
+  const colors = {
+    RISK_ON: 'bg-green-500/20 text-green-400 border-green-500/30',
+    TRANSITIONAL: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    RISK_OFF: 'bg-red-500/20 text-red-400 border-red-500/30',
   }
+  const dots = {
+    RISK_ON: 'bg-green-400',
+    TRANSITIONAL: 'bg-yellow-400',
+    RISK_OFF: 'bg-red-400',
+  }
+  const color = colors[regime as keyof typeof colors] || colors.TRANSITIONAL
+  const dot = dots[regime as keyof typeof dots] || dots.TRANSITIONAL
+
+  return (
+    <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${color}`}>
+      <span className={`w-2 h-2 rounded-full animate-pulse ${dot}`} />
+      <span className="font-semibold text-sm">{regime?.replace('_', ' ')}</span>
+      <span className="text-xs opacity-70">Score: {score?.toFixed(2)}</span>
+    </div>
+  )
 }
 
-const transactionsConfig = {
-  total: { label: "Transactions", color: "#2563EB" }, // Blue-600
-} satisfies ChartConfig
+function FXBadge({ signal, deviation }: { signal: string, deviation: number }) {
+  const colors = {
+    EUR_STRONG: 'bg-blue-500/20 text-blue-400 border-blue-500/30',
+    USD_STRONG: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
+    NEUTRAL: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  }
+  const color = colors[signal as keyof typeof colors] || colors.NEUTRAL
+  return (
+    <div className={`flex items-center gap-2 px-4 py-2 rounded-full border ${color}`}>
+      <span className="font-semibold text-sm">FX: {signal?.replace('_', ' ')}</span>
+      <span className="text-xs opacity-70">{deviation > 0 ? '+' : ''}{(deviation * 100).toFixed(2)}%</span>
+    </div>
+  )
+}
 
-const flowConfig = {
-  inflow: { label: "Inflow", color: "#3B82F6" }, // Blue-500
-  outflow: { label: "Outflow", color: "#F59E0B" }, // Amber-500
-} satisfies ChartConfig
+function PortfolioDonut({ weights }: { weights: Record<string, number> }) {
+  const COLORS: Record<string, string> = {
+    arc_usdc: '#3b82f6',
+    arc_eurc: '#8b5cf6',
+    arc_usyc: '#22c55e',
+    arc_cirbtc: '#f97316',
+    sep_usdc: '#06b6d4',
+    base_usdc: '#ec4899',
+  }
 
-const chainConfig = {
-  base: { label: "Base", color: "#0052FF" }, // Base Blue
-  eth: { label: "Ethereum", color: "#627EEA" }, // ETH Purple
-  avax: { label: "Avalanche", color: "#E84142" }, // Avax Red
-  arc: { label: "Arc", color: "#E9A13F" }, // Arc Blockstream Gold
-} satisfies ChartConfig
+  const entries = Object.entries(weights || {}).filter(([, v]) => v > 0)
+  const total = entries.reduce((sum, [, v]) => sum + v, 0)
 
-export default function Page() {
-  // Get balance data from shared context (single source of truth)
-  const {
-    walletBalances,
-    walletTotal,
-    gatewayTotal,
-    isLoadingWallet,
-    isLoadingGateway,
-    wallets: contextWallets,
-    refreshGatewayBalance,
-    refreshWalletBalance,
-  } = useBalanceContext()
+  let cumulativePercent = 0
+  const slices = entries.map(([key, value]) => {
+    const percent = (value / total) * 100
+    const startPercent = cumulativePercent
+    cumulativePercent += percent
+    return { key, percent, startPercent, color: COLORS[key] || '#6b7280' }
+  })
 
-  // Local state for data not in context
-  const [localWallets, setLocalWallets] = useState<Wallet[]>([])
-  const [transactions, setTransactions] = useState<Transaction[]>([])
-  const [loading, setLoading] = useState(true)
-  const [isCreateWalletOpen, setCreateWalletOpen] = useState(false)
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
-  const [isRefreshing, setIsRefreshing] = useState(false)
-  const [dateRange] = useDateRange(7)
-  const [selectedChains] = useState<string[]>([])
-  const [selectedStatuses] = useState<string[]>([])
-
-  // Filter transactions based on date range and other filters
-  const filteredTransactions = useMemo(() => {
-    return transactions.filter(tx => {
-      // Date range filter
-      const txDate = new Date(tx.created_at)
-      if (dateRange.from && txDate < dateRange.from) return false
-      if (dateRange.to && txDate > dateRange.to) return false
-
-      // Chain filter
-      if (selectedChains.length > 0 && !selectedChains.includes(tx.blockchain)) {
-        return false
-      }
-
-      // Status filter
-      if (selectedStatuses.length > 0 && !selectedStatuses.includes(tx.status)) {
-        return false
-      }
-
-      return true
-    })
-  }, [transactions, dateRange, selectedChains, selectedStatuses])
-
-  // Chart Data States
-  const [transactionsChartData, setTransactionsChartData] = useState<any[]>([])
-  const [flowData, setFlowData] = useState<any[]>([])
-  const [chainData, setChainData] = useState<any[]>([])
-
-  const supabase = createClient()
-
-  // Merge context wallets with local wallets (context has basic info, local has full details)
-  const wallets = useMemo(() => {
-    if (localWallets.length > 0) return localWallets
-    // Map context wallets to full wallet type (missing some fields)
-    return contextWallets.map(w => ({
-      ...w,
-      name: "",
-      type: "treasury" as const,
-      created_at: "",
-    }))
-  }, [localWallets, contextWallets])
-
-  // 1. Process Real Data for ALL charts
-  useEffect(() => {
-    // Initialize a map for the last 90 days
-    const dataMap = new Map<string, {
-      date: string;
-      total: number;
-      inflow: number;
-      outflow: number;
-      eth: number;
-      base: number;
-      avax: number;
-      arc: number;
-    }>()
-
-    const today = new Date()
-    const daysToLookBack = 90
-
-    // Pre-fill dates with 0 values
-    for (let i = daysToLookBack - 1; i >= 0; i--) {
-      const d = new Date()
-      d.setDate(today.getDate() - i)
-      const dateStr = d.toLocaleDateString('en-CA')
-
-      dataMap.set(dateStr, {
-        date: dateStr,
-        total: 0,
-        inflow: 0,
-        outflow: 0,
-        eth: 0,
-        base: 0,
-        avax: 0,
-        arc: 0
-      })
-    }
-
-    // Create a Set of internal wallet addresses for O(1) lookup
-    const internalWalletAddresses = new Set(wallets.map(w => (w.address ?? "").toLowerCase()))
-
-    // Aggregate transaction data
-    transactions.forEach((tx) => {
-      const dateStr = new Date(tx.created_at).toLocaleDateString('en-CA')
-
-      // Only process if within our 90 day window
-      if (dataMap.has(dateStr)) {
-        const entry = dataMap.get(dateStr)!
-
-        // 1. Total Transactions Count
-        entry.total += 1
-
-        // 2. Inflow vs Outflow (Count of Transactions)
-        const isGateway = (tx.recipient_address ?? "").toLowerCase() === GATEWAY_ADDRESS.toLowerCase()
-        const isSenderInternal = internalWalletAddresses.has((tx.sender_address ?? "").toLowerCase())
-        const isRecipientInternal = internalWalletAddresses.has((tx.recipient_address ?? "").toLowerCase())
-
-        if (!isGateway && isSenderInternal && isRecipientInternal) {
-          entry.inflow += 1
-          entry.outflow += 1
-        } else {
-          if (tx.type === 'INBOUND') {
-            entry.inflow += 1
-          } else {
-            entry.outflow += 1
-          }
-        }
-
-        // 3. Chain Distribution
-        switch (tx.blockchain) {
-          case 'ETH-SEPOLIA': entry.eth += 1; break;
-          case 'BASE-SEPOLIA': entry.base += 1; break;
-          case 'AVAX-FUJI': entry.avax += 0; break;
-          case 'ARC-TESTNET': entry.arc += 1; break;
-        }
-      }
-    })
-
-    // Convert Map to Arrays
-    const sortedData = Array.from(dataMap.values()).sort((a, b) =>
-      new Date(a.date).getTime() - new Date(b.date).getTime()
-    )
-
-    // This prevents "2025-12-19" (UTC Midnight) from shifting to "Dec 18" (Local Previous Day)
-    const formatForChart = (d: any) => ({ ...d, date: `${d.date}T00:00:00` })
-
-    setTransactionsChartData(sortedData.map(d => formatForChart({ date: d.date, total: d.total })))
-    setFlowData(sortedData.map(d => formatForChart({ date: d.date, inflow: d.inflow, outflow: d.outflow })))
-    setChainData(sortedData.map(d => formatForChart({ date: d.date, eth: d.eth, base: d.base, avax: d.avax, arc: d.arc })))
-  }, [transactions, wallets])
-
-  // Fetch transactions and wallet details (for activity feed and charts)
-  // Balance fetching is handled by the shared context
-  useEffect(() => {
-    let channel: RealtimeChannel | null = null
-
-    const setupData = async () => {
-      try {
-        const { data: { user } } = await supabase.auth.getUser()
-        if (!user) return
-
-        // Fetch wallets with full details (for activity feed)
-        const { data: walletsData, error: walletsError } = await supabase
-          .from("wallets")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-
-        if (walletsError) throw walletsError
-
-        const { data: transactionsData, error: transactionsError } = await supabase
-          .from("transactions")
-          .select("*")
-          .eq("user_id", user.id)
-          .order("created_at", { ascending: false })
-
-        if (transactionsError) throw transactionsError
-
-        setLocalWallets(walletsData || [])
-        setTransactions(transactionsData || [])
-        if (typeof window !== 'undefined') {
-          setLastUpdated(new Date())
-        }
-        setLoading(false)
-
-        // Subscribe to wallet changes (for activity feed updates)
-        channel = supabase
-          .channel("dashboard-activity-realtime")
-          .on(
-            "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table: "wallets",
-              filter: `user_id=eq.${user.id}`,
-            },
-            (payload) => {
-              if (payload.eventType === "INSERT") {
-                const newWallet = payload.new as Wallet
-                setLocalWallets((prev) => {
-                  if (prev.some((w) => w.id === newWallet.id)) return prev
-                  return [newWallet, ...prev]
-                })
-              } else if (payload.eventType === "DELETE") {
-                setLocalWallets((prev) => prev.filter((w) => w.id !== payload.old.id))
-              } else if (payload.eventType === "UPDATE") {
-                setLocalWallets((prev) =>
-                  prev.map((w) => (w.id === payload.new.id ? (payload.new as Wallet) : w))
-                )
-              }
-              setLastUpdated(new Date())
-            }
-          )
-          .on(
-            "postgres_changes",
-            {
-              event: "*",
-              schema: "public",
-              table: "transactions",
-              filter: `user_id=eq.${user.id}`,
-            },
-            (payload) => {
-              // Only handle transaction list updates (for activity feed)
-              // Balance updates are handled by the shared context
-              if (payload.eventType === "INSERT") {
-                const newTx = payload.new as Transaction
-                setTransactions((prev) => {
-                  if (prev.some((tx) => tx.id === newTx.id)) return prev
-                  return [newTx, ...prev]
-                })
-              } else if (payload.eventType === "UPDATE") {
-                const updatedTx = payload.new as Transaction
-                setTransactions((prev) =>
-                  prev.map((tx) => (tx.id === updatedTx.id ? updatedTx : tx))
-                )
-              }
-              setLastUpdated(new Date())
-            }
-          )
-          .subscribe()
-
-      } catch (error) {
-        console.error("Error setting up dashboard:", error)
-        toast.error("Failed to load dashboard data")
-        setLoading(false)
-      }
-    }
-
-    setupData()
-
-    return () => {
-      if (channel) {
-        supabase.removeChannel(channel)
-      }
-    }
-  }, [supabase])
-
-  const activityFeed = useMemo(() => {
-    const walletActivities: ActivityItem[] = localWallets.map((wallet) => ({
-      id: `create-${wallet.id}`,
-      type: "wallet_created",
-      title: (
-        <span>
-          New <span className="font-semibold">{wallet.type}</span> wallet created
-        </span>
-      ),
-      timestamp: wallet.created_at,
-      icon: IconWallet,
-      description: (
-        <span>
-          {wallet.name} <span className="text-muted-foreground">({wallet.blockchain})</span>
-        </span>
-      ),
-    }))
-
-    const transactionActivities: ActivityItem[] = transactions.map((tx) => {
-      const isDeposit = (tx.recipient_address ?? "").toLowerCase() === GATEWAY_ADDRESS.toLowerCase()
-
-      if (isDeposit) {
-        const senderWallet = localWallets.find(
-          (w) => (w.address ?? "").toLowerCase() === (tx.sender_address ?? "").toLowerCase()
-        )
-        const blockchain = senderWallet?.blockchain
-
-        return {
-          id: `tx-${tx.id}`,
-          type: "deposit",
-          title: (
-            <span>
-              ${(tx.amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-            </span>
-          ),
-          timestamp: tx.created_at,
-          icon: IconPlus,
-          description: (
-            <>
-              {blockchain ? (
-                <a
-                  href={getExplorerUrl(blockchain, tx.sender_address)}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="font-mono hover:text-primary hover:underline transition-colors"
-                >
-                  {shortenAddress(tx.sender_address)}
-                </a>
-              ) : (
-                <span className="font-mono">{shortenAddress(tx.sender_address)}</span>
-              )}
-              {" "}→ Gateway Balance
-            </>
-          ),
-        }
-      }
-
-      return {
-        id: `tx-${tx.id}`,
-        type: "transfer",
-        title: (
-          <span>
-            ${(tx.amount ?? 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </span>
-        ),
-        timestamp: tx.created_at,
-        icon: IconArrowsLeftRight,
-        description: (
-          <span>
-            {shortenAddress(tx.sender_address)} → {shortenAddress(tx.recipient_address)}
-          </span>
-        ),
-      }
-    })
-
-    return [...walletActivities, ...transactionActivities].sort(
-      (a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime()
-    )
-  }, [localWallets, transactions])
-
-  const handleRefresh = async () => {
-    setIsRefreshing(true)
-    try {
-      // Re-fetch data
-      const { data: { user } } = await supabase.auth.getUser()
-      if (!user) return
-
-      const [_, __, { data: walletsData }, { data: transactionsData }] = await Promise.all([
-        refreshGatewayBalance(),
-        refreshWalletBalance(),
-        supabase.from("wallets").select("*").eq("user_id", user.id).order("created_at", { ascending: false }),
-        supabase.from("transactions").select("*").eq("user_id", user.id).order("created_at", { ascending: false })
-      ])
-
-      setLocalWallets(walletsData || [])
-      setTransactions(transactionsData || [])
-      setLastUpdated(new Date())
-      toast.success("Data refreshed successfully")
-    } catch (error) {
-      console.error("Error refreshing data:", error)
-      toast.error("Failed to refresh data")
-    } finally {
-      setIsRefreshing(false)
-    }
+  const getCoordinates = (percent: number) => {
+    const x = Math.cos(2 * Math.PI * percent / 100)
+    const y = Math.sin(2 * Math.PI * percent / 100)
+    return [x, y]
   }
 
   return (
-    <div className="flex flex-col p-4 md:p-6">
-      <NewWalletDialog
-        open={isCreateWalletOpen}
-        onOpenChange={setCreateWalletOpen}
-      />
-
-      {/* Header */}
-      <div className="flex flex-col mb-4">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h3 className="scroll-m-20 text-3xl tracking-tight flex items-center">
-              <span className="mr-2">Balance</span>
-              {!isLoadingWallet ? (
-                `$${walletTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
-              ) : (
-                <Skeleton className="h-6 w-20" />
-              )}
-            </h3>
-            <div className="text-muted-foreground flex items-center gap-2 text-lg">
-              <span>Gateway Balance</span>
-              {!isLoadingGateway ? (
-                <>
-                  <span>
-                    ${gatewayTotal.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </span>
-                  <GatewayBalanceDialog />
-                </>
-              ) : (
-                <Skeleton className="h-4 w-11" />
-              )}
-            </div>
+    <div className="flex flex-col items-center gap-4">
+      <svg viewBox="-1 -1 2 2" className="w-48 h-48" style={{ transform: 'rotate(-90deg)' }}>
+        {slices.map(({ key, percent, startPercent, color }) => {
+          const [x1, y1] = getCoordinates(startPercent)
+          const [x2, y2] = getCoordinates(startPercent + percent)
+          const largeArc = percent > 50 ? 1 : 0
+          return (
+            <path
+              key={key}
+              d={`M 0 0 L ${x1} ${y1} A 1 1 0 ${largeArc} 1 ${x2} ${y2} Z`}
+              fill={color}
+              opacity={0.85}
+            />
+          )
+        })}
+        <circle cx="0" cy="0" r="0.6" fill="#111827" />
+      </svg>
+      <div className="grid grid-cols-2 gap-x-6 gap-y-1 w-full">
+        {slices.map(({ key, percent, color }) => (
+          <div key={key} className="flex items-center gap-2 text-xs">
+            <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: color }} />
+            <span className="text-gray-400 truncate">{key.replace('_', ' ')}</span>
+            <span className="text-white ml-auto">{percent.toFixed(1)}%</span>
           </div>
-          <DataFreshnessIndicator
-            lastUpdated={lastUpdated}
-            isRefreshing={isRefreshing}
-            onRefresh={handleRefresh}
-          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export default function DashboardPage() {
+  const router = useRouter()
+  const [userId, setUserId] = useState('')
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null)
+
+  useEffect(() => {
+    const stored = localStorage.getItem('adaptivefolio_user_id')
+    if (!stored) {
+      router.push('/onboarding')
+      return
+    }
+    setUserId(stored)
+  }, [router])
+
+  const { snapshot: market, loading: marketLoading } = useMarketSnapshot()
+  const { snapshot: portfolio, loading: portfolioLoading } = usePortfolioSnapshot(userId)
+  const { decisions, loading: decisionsLoading } = useDecisionLog(userId)
+
+  useEffect(() => {
+    if (market) setLastUpdated(new Date())
+  }, [market])
+
+  const mockWeights = {
+    arc_usdc: 0.20,
+    arc_eurc: 0.10,
+    arc_usyc: 0.50,
+    sep_usdc: 0.12,
+    base_usdc: 0.08,
+  }
+
+  const weights = portfolio?.weights || mockWeights
+  const regime = market?.regime || 'TRANSITIONAL'
+  const regimeScore = market?.regime_score || 0.45
+  const fxSignal = market?.fx_signal || 'NEUTRAL'
+  const fxDeviation = market?.fx_deviation || 0
+  const totalValue = portfolio?.total_value_usd || 0
+  const peakValue = portfolio?.peak_value_usd || 0
+  const drawdown = portfolio?.drawdown_pct || 0
+
+  return (
+    <div className="min-h-screen bg-gray-950 text-white">
+      {/* Nav */}
+      <nav className="border-b border-gray-800 px-6 py-4 flex items-center justify-between">
+        <h1 className="text-xl font-bold text-white">AdaptiveFolio</h1>
+        <div className="flex items-center gap-2 text-sm">
+          {[
+            { label: 'Dashboard', path: '/dashboard' },
+            { label: 'Decisions', path: '/decisions' },
+            { label: 'Transactions', path: '/transactions' },
+            { label: 'Opportunities', path: '/opportunities' },
+            { label: 'Tax', path: '/tax' },
+          ].map(({ label, path }) => (
+            <button
+              key={path}
+              onClick={() => router.push(path)}
+              className="px-3 py-1.5 rounded-lg hover:bg-gray-800 text-gray-400 hover:text-white transition-colors"
+            >
+              {label}
+            </button>
+          ))}
         </div>
-      </div>
+      </nav>
 
-
-
-      {/* Actions */}
-      <div className="flex flex-wrap gap-3 mb-4 md:mb-6">
-        <TransferDialog />
-        <SendButton />
-        <RebalanceButton />
-        <AddFundsDialog />
-        <Button variant="outline" onClick={() => setCreateWalletOpen(true)}>
-          <IconWallet className="mr-2 size-4" />
-          New wallet
-        </Button>
-      </div>
-
-      <SectionCards />
-
-      <Tabs defaultValue="transactions" className="mt-4 md:mt-6 space-y-4">
-        <TabsList>
-          <TabsTrigger value="transactions">Transactions</TabsTrigger>
-          <TabsTrigger value="inflows-vs-outflows">Inflows vs Outflows</TabsTrigger>
-          <TabsTrigger value="chain-distribution">Chain Distribution</TabsTrigger>
-        </TabsList>
-
-        <TabsContent value="transactions" className="space-y-4">
-          <ChartLineInteractive
-            title="Transaction Volume"
-            description="Total transactions over time"
-            data={transactionsChartData}
-            config={transactionsConfig}
-          />
-        </TabsContent>
-
-        <TabsContent value="inflows-vs-outflows" className="space-y-4">
-          <ChartLineInteractive
-            title="Transaction Flow Volume"
-            description="Count of Inbound vs Outbound Transactions"
-            data={flowData}
-            config={flowConfig}
-          />
-        </TabsContent>
-
-        <TabsContent value="chain-distribution" className="space-y-4">
-          <ChartLineInteractive
-            title="Chain Activity"
-            description="Transaction volume distribution by blockchain"
-            data={chainData}
-            config={chainConfig}
-          />
-        </TabsContent>
-      </Tabs>
-
-      {/* Activity & Wallets Lists */}
-      <div className="grid gap-8 lg:grid-cols-2 mt-4 md:mt-6">
-        {/* Activity Column */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium">Activity</h2>
-            <div className="flex items-center gap-2">
-              <ExportButton
-                data={filteredTransactions}
-                filename="transactions"
-                type="transactions"
-                className="h-8"
-              />
-              <Button variant="ghost" className="text-muted-foreground hover:text-foreground h-auto text-sm font-normal hover:bg-transparent">
-                <Link href="/dashboard/activity">
-                  View all
-                </Link>
-                <IconArrowUpRight className="ml-1 size-4" />
-              </Button>
-            </div>
-          </div>
-
-          <Separator className="mb-6" />
-
-          <div className="space-y-6">
-            {loading ? (
-              <div className="flex h-32 items-center justify-center text-muted-foreground">
-                <IconLoader className="animate-spin" />
-              </div>
-            ) : activityFeed.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-8 text-center">
-                <div className="bg-muted flex size-12 items-center justify-center rounded-full">
-                  <IconArrowsLeftRight className="text-muted-foreground size-6" />
-                </div>
-                <h3 className="text-sm font-medium">No activity yet</h3>
-                <p className="text-muted-foreground text-xs">
-                  Create a wallet and make your first transaction to see activity.
-                </p>
-              </div>
-            ) : (
-              activityFeed.slice(0, 5).map((item) => (
-                <div key={item.id} className="flex items-start gap-4 animate-in fade-in slide-in-from-bottom-2 duration-500">
-                  <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg border border-transparent">
-                    <item.icon className="size-4" />
-                  </div>
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <div className="text-sm font-medium leading-none">{item.title}</div>
-                      <span className="text-[10px] text-muted-foreground/60">
-                        {formatDate(item.timestamp)}
-                      </span>
-                    </div>
-                    <div className="text-muted-foreground text-xs">
-                      {item.description}
-                    </div>
-                  </div>
-                </div>
-              ))
-            )}
-          </div>
+      <div className="max-w-6xl mx-auto p-6 space-y-6">
+        {/* Top bar — regime + FX */}
+        <div className="flex items-center gap-3 flex-wrap">
+          <RegimeBadge regime={regime} score={regimeScore} />
+          <FXBadge signal={fxSignal} deviation={fxDeviation} />
+          {lastUpdated && (
+            <span className="text-xs text-gray-500 ml-auto">
+              Updated {Math.round((Date.now() - lastUpdated.getTime()) / 1000)}s ago
+            </span>
+          )}
         </div>
 
-        {/* Wallets Column */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <h2 className="text-lg font-medium">Wallets</h2>
-            <div className="flex items-center gap-2">
-              <ExportButton
-                data={localWallets}
-                filename="wallets"
-                type="wallets"
-                className="h-8"
-              />
-              <Button variant="ghost" className="text-muted-foreground hover:text-foreground h-auto text-sm font-normal hover:bg-transparent">
-                <Link href="/dashboard/wallets">
-                  View all
-                </Link>
-                <IconArrowUpRight className="ml-1 size-4" />
-              </Button>
-            </div>
+        {/* Main grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Portfolio donut */}
+          <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+            <h2 className="text-sm font-medium text-gray-400 mb-4">Portfolio Weights</h2>
+            <PortfolioDonut weights={weights} />
           </div>
 
-          <Separator className="mb-6" />
-
-          <div className="space-y-6">
-            {loading ? (
-              <div className="flex h-32 items-center justify-center text-muted-foreground">
-                <IconLoader className="animate-spin" />
-              </div>
-            ) : localWallets.length === 0 ? (
-              <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed p-8 text-center">
-                <div className="bg-muted flex size-12 items-center justify-center rounded-full">
-                  <IconWallet className="text-muted-foreground size-6" />
+          {/* Performance + Chain positions */}
+          <div className="lg:col-span-2 space-y-4">
+            {/* Performance */}
+            <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+              <h2 className="text-sm font-medium text-gray-400 mb-4">Performance</h2>
+              <div className="grid grid-cols-3 gap-4">
+                <div>
+                  <p className="text-xs text-gray-500">Total Value</p>
+                  <p className="text-2xl font-bold">${totalValue.toFixed(2)}</p>
                 </div>
-                <h3 className="text-sm font-medium">No wallets created</h3>
-                <p className="text-muted-foreground text-xs">
-                  Create your first developer-controlled wallet to get started.
-                </p>
-                <div className="mt-2">
-                  <Button size="sm" onClick={() => setCreateWalletOpen(true)}>
-                    Create Wallet
-                  </Button>
+                <div>
+                  <p className="text-xs text-gray-500">Peak Value</p>
+                  <p className="text-2xl font-bold">${peakValue.toFixed(2)}</p>
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">Drawdown</p>
+                  <p className={`text-2xl font-bold ${drawdown > 0 ? 'text-red-400' : 'text-green-400'}`}>
+                    -{drawdown.toFixed(2)}%
+                  </p>
                 </div>
               </div>
-            ) : (
-              <>
-                {localWallets.slice(0, 5).map((wallet) => {
-                  const balance = walletBalances[wallet.circle_wallet_id]
+            </div>
 
+            {/* Chain positions */}
+            <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+              <h2 className="text-sm font-medium text-gray-400 mb-4">Chain Positions</h2>
+              <div className="space-y-3">
+                {[
+                  { chain: 'Arc Testnet', keys: ['arc_usdc', 'arc_eurc', 'arc_usyc'] },
+                  { chain: 'Ethereum Sepolia', keys: ['sep_usdc'] },
+                  { chain: 'Base Sepolia', keys: ['base_usdc'] },
+                ].map(({ chain, keys }) => {
+                 const total = keys.reduce((sum, k) => sum + ((weights as Record<string, number>)[k] || 0), 0)
+                  if (total === 0) return null
                   return (
-                    <div key={wallet.id} className="flex items-start gap-4">
-                      <div className="bg-muted text-muted-foreground flex size-9 shrink-0 items-center justify-center rounded-lg border border-transparent">
-                        <IconWallet className="size-4" />
-                      </div>
-                      <div className="space-y-1">
-                        <p className="text-sm font-medium leading-none">
-                          {wallet.name}{" "}
-                          <a
-                            href={getExplorerUrl(wallet.blockchain, wallet.address)}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="text-muted-foreground font-mono text-xs hover:text-primary hover:underline transition-colors"
-                          >
-                            {shortenAddress(wallet.address)}
-                          </a>
-                        </p>
-                        {/* Display Skeleton if balance is undefined, otherwise display balance */}
-                        {balance !== undefined ? (
-                          <p className="text-muted-foreground text-xs">
-                            {balance}
-                          </p>
-                        ) : (
-                          <Skeleton className="h-3 w-10 rounded-sm mt-1" />
-                        )}
+                    <div key={chain} className="flex items-center justify-between py-2 border-b border-gray-800 last:border-0">
+                      <span className="text-sm text-gray-300">{chain}</span>
+                      <div className="flex items-center gap-3">
+                        <div className="w-24 bg-gray-800 rounded-full h-1.5">
+                          <div className="bg-blue-500 h-1.5 rounded-full" style={{ width: `${total * 100}%` }} />
+                        </div>
+                        <span className="text-sm text-white w-12 text-right">{(total * 100).toFixed(1)}%</span>
                       </div>
                     </div>
                   )
                 })}
-
-                <Button
-                  variant="ghost"
-                  className="text-muted-foreground hover:text-foreground h-auto text-sm font-normal hover:bg-transparent"
-                  onClick={() => setCreateWalletOpen(true)}
-                >
-                  <IconPlus className="mr-2 size-4" />
-                  Create new wallet
-                </Button>
-              </>
-            )}
+              </div>
+            </div>
           </div>
+        </div>
+
+        {/* Decision log preview */}
+        <div className="bg-gray-900 rounded-2xl p-6 border border-gray-800">
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="text-sm font-medium text-gray-400">Recent Decisions</h2>
+            <button
+              onClick={() => router.push('/decisions')}
+              className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+            >
+              View all →
+            </button>
+          </div>
+
+          {decisionsLoading ? (
+            <p className="text-gray-500 text-sm">Loading decisions...</p>
+          ) : decisions.length === 0 ? (
+            <div className="text-center py-8">
+              <p className="text-gray-500 text-sm">No decisions yet — agent is initializing</p>
+              <p className="text-gray-600 text-xs mt-1">First decision will appear within 60 seconds of backend starting</p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {decisions.slice(0, 5).map((d) => (
+                <div key={d.id} className="flex items-start gap-3 py-2 border-b border-gray-800 last:border-0">
+                  <span className={`mt-0.5 px-2 py-0.5 rounded text-xs font-medium flex-shrink-0 ${
+                    d.action_taken
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-gray-700 text-gray-400'
+                  }`}>
+                    {d.action_taken ? 'ACTED' : 'HELD'}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs text-gray-500">{new Date(d.timestamp).toLocaleTimeString()} · {d.trigger_event}</p>
+                    <p className="text-sm text-gray-300 mt-0.5 truncate">{d.explanation}</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
